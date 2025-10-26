@@ -30,6 +30,8 @@ This file focuses on functionality. Styling uses Tailwind-like classes; adapt to
 
 import React, { useEffect, useState, useRef } from "react";
 import { jsPDF } from "jspdf";
+import './App.css';
+
 
 /* ---------- Simple IndexedDB wrapper ---------- */
 function openDB(dbName = "invoice_app", version = 1) {
@@ -211,6 +213,7 @@ export default function App() {
 
   return (
     <div className="app-container">
+      {/* Header Section */}
       <header className="app-header">
         <div className="header-content">
           <h1 className="app-title">Invoice Generator</h1>
@@ -232,33 +235,80 @@ export default function App() {
         </div>
       </header>
 
-      <main className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <section className="col-span-2 card">
-          <h2 className="card-title">Create Invoice</h2>
-          <InvoiceForm items={items} addItem={addItem} saveInvoice={saveInvoice} seller={seller} setSelectedInvoice={setSelectedInvoice} updateItem={updateItem} />
-        </section>
+      {/* Main Content Grid */}
+      <main className="main-content">
+        {/* Top Row - Create Invoice and Master Data */}
+        <div className="content-row">
+          <section className="card invoice-form-section">
+            <h2 className="card-title">📝 Create Invoice</h2>
+            <InvoiceForm items={items} addItem={addItem} saveInvoice={saveInvoice} seller={seller} setSelectedInvoice={setSelectedInvoice} updateItem={updateItem} />
+          </section>
 
-        <aside className="card">
-          <h3 className="card-title">Master Data (Items)</h3>
-          <MasterData items={items} onAdd={addItem} onUpdate={updateItem} onDelete={deleteItem} />
-          <hr className="my-4" />
-          <Dashboard invoices={invoices} />
-        </aside>
+          <aside className="card master-data-section">
+            <h3 className="card-title">📦 Master Data (Items)</h3>
+            <MasterData items={items} onAdd={addItem} onUpdate={updateItem} onDelete={deleteItem} />
+            <div className="dashboard-section">
+              <Dashboard invoices={invoices} />
+            </div>
+          </aside>
+        </div>
 
-        <section className="col-span-3 card">
-          <h3 className="card-title">Invoice Management</h3>
-          <div className="flex gap-2 mb-4 flex-wrap">
-            <input placeholder="Search customer" value={filter.q} onChange={e => setFilter({ ...filter, q: e.target.value })} className="form-input flex-1 min-w-200" />
-            <input type="date" value={filter.from} onChange={e => setFilter({ ...filter, from: e.target.value })} className="form-input" />
-            <input type="date" value={filter.to} onChange={e => setFilter({ ...filter, to: e.target.value })} className="form-input" />
-            <input placeholder="Invoice #" value={filter.invoiceNumber} onChange={e => setFilter({ ...filter, invoiceNumber: e.target.value })} className="form-input w-40" />
+        {/* Bottom Row - Invoice Management */}
+        <section className="card invoice-management-section">
+          <h3 className="card-title">📋 Invoice Management</h3>
+          
+          {/* Search and Filter Section */}
+          <div className="search-filter-section">
+            <div className="search-filters">
+              <div className="form-group">
+                <label className="form-label">Search Customer</label>
+                <input 
+                  placeholder="Enter customer name..." 
+                  value={filter.q} 
+                  onChange={e => setFilter({ ...filter, q: e.target.value })} 
+                  className="form-input" 
+                />
+              </div>
+              <div className="form-group">
+                <label className="form-label">From Date</label>
+                <input 
+                  type="date" 
+                  value={filter.from} 
+                  onChange={e => setFilter({ ...filter, from: e.target.value })} 
+                  className="form-input" 
+                />
+              </div>
+              <div className="form-group">
+                <label className="form-label">To Date</label>
+                <input 
+                  type="date" 
+                  value={filter.to} 
+                  onChange={e => setFilter({ ...filter, to: e.target.value })} 
+                  className="form-input" 
+                />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Invoice Number</label>
+                <input 
+                  placeholder="Enter invoice number..." 
+                  value={filter.invoiceNumber} 
+                  onChange={e => setFilter({ ...filter, invoiceNumber: e.target.value })} 
+                  className="form-input" 
+                />
+              </div>
+            </div>
           </div>
 
-          <InvoiceList invoices={filteredInvoices()} onEdit={(inv) => { setSelectedInvoice(inv); window.scrollTo({ top: 0, behavior: 'smooth' }) }} onDelete={deleteInvoice} seller={seller} />
+          {/* Invoice List Section */}
+          <div className="invoice-list-section">
+            <InvoiceList invoices={filteredInvoices()} onEdit={(inv) => { setSelectedInvoice(inv); window.scrollTo({ top: 0, behavior: 'smooth' }) }} onDelete={deleteInvoice} seller={seller} />
+          </div>
 
-          <ImportExport invoices={invoices} setInvoices={setInvoices} />
+          {/* Import/Export Section */}
+          <div className="import-export-section">
+            <ImportExport invoices={invoices} setInvoices={setInvoices} />
+          </div>
         </section>
-
       </main>
     </div>
   );
