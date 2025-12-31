@@ -31,10 +31,11 @@ This file focuses on functionality. Styling uses Tailwind-like classes; adapt to
 import React, { useEffect, useState, useRef } from "react";
 import { jsPDF } from "jspdf";
 import './App.css';
+import stampSignImage from './image/stamp_sign.png';
 
 
 /* ---------- Simple IndexedDB wrapper ---------- */
-function openDB(dbName = "invoice_app", version = 1) {
+function openDB(dbName = "invoice_app", version = 2) {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(dbName, version);
     req.onupgradeneeded = (e) => {
@@ -48,6 +49,10 @@ function openDB(dbName = "invoice_app", version = 1) {
         inv.createIndex("invoiceNumber", "invoiceNumber", { unique: true });
         inv.createIndex("date", "date", { unique: false });
         inv.createIndex("customerName", "customer.name", { unique: false });
+      }
+      if (!db.objectStoreNames.contains("customers")) {
+        const customers = db.createObjectStore("customers", { keyPath: "id", autoIncrement: true });
+        customers.createIndex("name", "name", { unique: false });
       }
       if (!db.objectStoreNames.contains("meta")) {
         db.createObjectStore("meta", { keyPath: "key" });
@@ -120,12 +125,82 @@ function csvEscape(val) {
   return s;
 }
 
+/* ---------- Number to Words Converter ---------- */
+function numberToWords(num) {
+  const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+  const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+  
+  function convertHundreds(n) {
+    let result = '';
+    if (n > 99) {
+      result += ones[Math.floor(n / 100)] + ' Hundred ';
+      n %= 100;
+    }
+    if (n > 19) {
+      result += tens[Math.floor(n / 10)] + ' ';
+      n %= 10;
+    }
+    if (n > 0) {
+      result += ones[n] + ' ';
+    }
+    return result.trim();
+  }
+  
+  if (num === 0) return 'Zero';
+  
+  const numStr = num.toString();
+  const parts = numStr.split('.');
+  let integerPart = parseInt(parts[0], 10);
+  const decimalPart = parts[1] ? parseInt(parts[1].substring(0, 2), 10) : 0;
+  
+  let words = '';
+  
+  if (integerPart >= 10000000) {
+    const crores = Math.floor(integerPart / 10000000);
+    words += convertHundreds(crores) + 'Crore ';
+    integerPart %= 10000000;
+  }
+  if (integerPart >= 100000) {
+    const lakhs = Math.floor(integerPart / 100000);
+    words += convertHundreds(lakhs) + 'Lakh ';
+    integerPart %= 100000;
+  }
+  if (integerPart >= 1000) {
+    const thousands = Math.floor(integerPart / 1000);
+    words += convertHundreds(thousands) + 'Thousand ';
+    integerPart %= 1000;
+  }
+  if (integerPart > 0) {
+    words += convertHundreds(integerPart);
+  }
+  
+  words = words.trim() + ' Rupees';
+  
+  if (decimalPart > 0) {
+    words += ' and ' + convertHundreds(decimalPart) + 'Paise';
+  }
+  
+  return words.trim() + ' Only';
+}
+
+/* ---------- Date Formatter ---------- */
+function formatDate(dateStr) {
+  if (!dateStr) return '';
+  const date = new Date(dateStr);
+  const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const day = date.getDate();
+  const month = months[date.getMonth()];
+  const year = date.getFullYear();
+  return `${day} ${month} ${year}`;
+}
+
 /* ---------- Default bank / seller details ---------- */
 const DEFAULT_SELLER = {
   businessName: "Yogiraj Men's Wear",
   owner: "Yogesh Vasudev Shetty",
-  address: "Room No.2, Parasnath Dubey Chawl 2, M/ajs Road, Thakur Nagar, Jogeshwari - East, Mumbai - 4000603",
+  address: "3 Gumph Ashram ,Majaswadi,Trishul building,Jogeshwari - East, Mumbai - 4000603",
   contact: "Mob: 9967777884 | 8652241919",
+  panNo: "ABCDE1234F", // Add your PAN number here, e.g., "ABCDE1234F"
   bank: {
     name: "PUNJAB NATIONAL BANK",
     accountName: "MR. YOGESH VASUDEV SHETTY",
@@ -139,6 +214,7 @@ const DEFAULT_SELLER = {
 export default function App() {
   const [items, setItems] = useState([]);
   const [invoices, setInvoices] = useState([]);
+  const [customers, setCustomers] = useState([]);
   const [seller, setSeller] = useState(DEFAULT_SELLER);
   const [filter, setFilter] = useState({ q: "", from: "", to: "", invoiceNumber: "" });
   const [selectedInvoice, setSelectedInvoice] = useState(null);
@@ -147,8 +223,10 @@ export default function App() {
     (async () => {
       const its = await idbGetAll("items");
       const invs = await idbGetAll("invoices");
+      const custs = await idbGetAll("customers");
       setItems(its);
       setInvoices(invs.sort((a, b) => new Date(b.date) - new Date(a.date)));
+      setCustomers(custs);
       // ensure a basic invoice counter in meta
       const ctr = await idbGet("meta", "invoice_counter");
       if (!ctr) await idbPut("meta", { key: "invoice_counter", value: 1 });
@@ -169,6 +247,20 @@ export default function App() {
     setItems(prev => prev.filter(p => p.id !== id));
   }
 
+  async function addCustomer(customer) {
+    const id = await idbAdd("customers", customer);
+    customer.id = id;
+    setCustomers(prev => [...prev, customer]);
+  }
+  async function updateCustomer(customer) {
+    await idbPut("customers", customer);
+    setCustomers(prev => prev.map(p => p.id === customer.id ? customer : p));
+  }
+  async function deleteCustomer(id) {
+    await idbDelete("customers", id);
+    setCustomers(prev => prev.filter(p => p.id !== id));
+  }
+
   async function saveInvoice(invoice, editId) {
     if (editId) {
       // Find the existing invoice to preserve its invoiceNumber
@@ -182,6 +274,11 @@ export default function App() {
       return invoice;
     }
     // generate invoice number
+    // Structure: YG-YYYYMMDD-####
+    // - YG: Business prefix (Yogiraj)
+    // - YYYYMMDD: Date in format Year(4)Month(2)Day(2), e.g., 20251213 for Dec 13, 2025
+    // - ####: Sequential counter (4 digits, zero-padded), increments for each new invoice
+    // Example: YG-20251213-0004 means: Yogiraj invoice, dated Dec 13, 2025, invoice #4
     const meta = await idbGet("meta", "invoice_counter");
     const counter = (meta && meta.value) ? meta.value : 1;
     const date = new Date(invoice.date || Date.now());
@@ -241,12 +338,14 @@ export default function App() {
         <div className="content-row">
           <section className="card invoice-form-section">
             <h2 className="card-title">📝 Create Invoice</h2>
-            <InvoiceForm items={items} addItem={addItem} saveInvoice={saveInvoice} seller={seller} setSelectedInvoice={setSelectedInvoice} updateItem={updateItem} />
+            <InvoiceForm items={items} customers={customers} addItem={addItem} saveInvoice={saveInvoice} seller={seller} setSelectedInvoice={setSelectedInvoice} updateItem={updateItem} />
           </section>
 
           <aside className="card master-data-section">
             <h3 className="card-title">📦 Master Data (Items)</h3>
             <MasterData items={items} onAdd={addItem} onUpdate={updateItem} onDelete={deleteItem} />
+            <h3 className="card-title mt-4">👥 Master Data (Customers)</h3>
+            <CustomerMasterData customers={customers} onAdd={addCustomer} onUpdate={updateCustomer} onDelete={deleteCustomer} />
             <div className="dashboard-section">
               <Dashboard invoices={invoices} />
             </div>
@@ -378,8 +477,74 @@ function MasterData({ items, onAdd, onUpdate, onDelete }) {
   );
 }
 
+/* ---------- CustomerMasterData component ---------- */
+function CustomerMasterData({ customers, onAdd, onUpdate, onDelete }) {
+  const [form, setForm] = useState({ name: "", contact: "", address: "" });
+  const [editing, setEditing] = useState(null);
+
+  function submit(e) {
+    e.preventDefault();
+    if (editing) {
+      onUpdate({ ...editing, ...form });
+      setEditing(null);
+    } else {
+      onAdd({ ...form });
+    }
+    setForm({ name: "", contact: "", address: "" });
+  }
+
+  function startEdit(customer) {
+    setEditing(customer);
+    setForm({ name: customer.name, contact: customer.contact, address: customer.address });
+  }
+
+  return (
+    <div>
+      <form onSubmit={submit} className="space-y-2">
+        <div className="grid grid-cols-3 gap-2">
+          <div className="form-group">
+            <label className="form-label">Name</label>
+            <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="form-input" />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Contact</label>
+            <input value={form.contact} onChange={e => setForm({ ...form, contact: e.target.value })} className="form-input" />
+          </div>
+          <div className="form-group">
+            <button className="btn btn-primary">{editing ? 'Update' : 'Add'}</button>
+          </div>
+        </div>
+        <div className="form-group">
+          <label className="form-label">Address</label>
+          <input value={form.address} onChange={e => setForm({ ...form, address: e.target.value })} className="form-input" />
+        </div>
+      </form>
+
+      <div className="mt-4 max-h-48 overflow-auto">
+        <table className="table">
+          <thead><tr><th>Name</th><th>Contact</th><th>Address</th><th>Actions</th></tr></thead>
+          <tbody>
+            {customers.map(cust => (
+              <tr key={cust.id}>
+                <td>{cust.name}</td>
+                <td>{cust.contact}</td>
+                <td>{cust.address}</td>
+                <td className="text-right">
+                  <button onClick={() => startEdit(cust)} className="btn btn-sm btn-secondary mr-2">Edit</button>
+                  <button onClick={() => onDelete(cust.id)} className="btn btn-sm btn-danger">Delete</button>
+                </td>
+              </tr>
+            ))}
+            {customers.length === 0 && <tr><td colSpan={4} className="py-4 text-center text-gray-500">No customers yet</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 /* ---------- InvoiceForm component ---------- */
-function InvoiceForm({ items, addItem, saveInvoice, seller, setSelectedInvoice, updateItem }) {
+function InvoiceForm({ items, customers, addItem, saveInvoice, seller, setSelectedInvoice, updateItem }) {
   const emptyLine = { itemId: null, description: "", qty: 1, price: 0, total: 0 };
   const [customer, setCustomer] = useState({ name: "", address: "", contact: "" });
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
@@ -387,6 +552,7 @@ function InvoiceForm({ items, addItem, saveInvoice, seller, setSelectedInvoice, 
   const [paymentTerms, setPaymentTerms] = useState("Due on receipt");
   const [currency, setCurrency] = useState("INR");
   const [editingInvoiceId, setEditingInvoiceId] = useState(null);
+  const [showPanNo, setShowPanNo] = useState(false);
 
   // Removed the problematic useEffect that was causing infinite re-renders
   // Calculation is now handled directly in updateLine function
@@ -461,6 +627,7 @@ function InvoiceForm({ items, addItem, saveInvoice, seller, setSelectedInvoice, 
       subtotal: consolidatedLines.reduce((s, l) => s + (Number(l.total) || 0), 0),
       total: consolidatedLines.reduce((s, l) => s + (Number(l.total) || 0), 0),
       seller,
+showPanNo, // Store the checkbox state with the invoice
       createdAt: new Date().toISOString()
     };
     const saved = await saveInvoice(invoice, editingInvoiceId);
@@ -468,6 +635,7 @@ function InvoiceForm({ items, addItem, saveInvoice, seller, setSelectedInvoice, 
     // reset form
     setCustomer({ name: "", address: "", contact: "" });
     setLines([{ ...emptyLine }]);
+setShowPanNo(false); // Reset checkbox state
     setEditingInvoiceId(null);
   }
 
@@ -480,6 +648,7 @@ function InvoiceForm({ items, addItem, saveInvoice, seller, setSelectedInvoice, 
       setCustomer(inv.customer || { name: '', address: '', contact: '' });
       setDate(inv.date ? inv.date.split('T')[0] : new Date().toISOString().slice(0, 10));
       setLines(inv.lines.map(l => ({ itemId: l.itemId, description: l.description, qty: l.qty, price: l.price, total: l.total })));
+setShowPanNo(inv.showPanNo || false); // Restore showPanNo state from saved invoice
       setEditingInvoiceId(inv.id);
     }
     window.addEventListener('editInvoice', handler);
@@ -503,7 +672,29 @@ function InvoiceForm({ items, addItem, saveInvoice, seller, setSelectedInvoice, 
         <div className="grid grid-cols-3 gap-4">
           <div className="form-group">
             <label className="form-label">Customer name</label>
-            <input value={customer.name} onChange={e => setCustomer({ ...customer, name: e.target.value })} className="form-input" />
+            <select 
+              value={customer.name} 
+              onChange={e => {
+                const selectedCustomer = customers.find(c => c.name === e.target.value);
+                if (selectedCustomer) {
+                  setCustomer({ name: selectedCustomer.name, address: selectedCustomer.address, contact: selectedCustomer.contact });
+                } else {
+                  setCustomer({ ...customer, name: e.target.value });
+                }
+              }}
+              className="form-input"
+            >
+              <option value="">-- Select Customer --</option>
+              {customers.map(cust => (
+                <option key={cust.id} value={cust.name}>{cust.name}</option>
+              ))}
+            </select>
+            <input 
+              value={customer.name} 
+              onChange={e => setCustomer({ ...customer, name: e.target.value })} 
+              className="form-input mt-2" 
+              placeholder="Or enter new customer name"
+            />
           </div>
           <div className="form-group">
             <label className="form-label">Contact</label>
@@ -518,6 +709,18 @@ function InvoiceForm({ items, addItem, saveInvoice, seller, setSelectedInvoice, 
         <div className="form-group">
           <label className="form-label">Address</label>
           <input value={customer.address} onChange={e => setCustomer({ ...customer, address: e.target.value })} className="form-input" />
+        </div>
+
+        <div className="form-group">
+          <label className="form-label flex items-center">
+            <input 
+              type="checkbox" 
+              checked={showPanNo} 
+              onChange={e => setShowPanNo(e.target.checked)} 
+              className="mr-2"
+            />
+            Show PAN No in PDF
+          </label>
         </div>
 
         <div className="overflow-auto">
@@ -582,8 +785,8 @@ function InvoiceForm({ items, addItem, saveInvoice, seller, setSelectedInvoice, 
               }
             }} className="btn btn-secondary">Consolidate Items</button>
             <button type="submit" className="btn btn-success">Save Invoice</button>
-            <button type="button" onClick={() => printCurrentInvoice({ customer, date, lines, subtotal: subtotal(), total: grandTotal() }, seller)} className="btn btn-primary">Print</button>
-            <PdfButton seller={seller} customer={customer} date={date} lines={lines} subtotal={subtotal()} total={grandTotal()} />
+            <button type="button" onClick={() => printCurrentInvoice({ customer, date, lines, subtotal: subtotal(), total: grandTotal(), invoiceNumber: '' }, seller, showPanNo)} className="btn btn-primary">Print</button>
+            <PdfButton seller={seller} customer={customer} date={date} lines={lines} subtotal={subtotal()} total={grandTotal()} showPanNo={showPanNo} invoiceNumber="" />
           </div>
         </div>
 
@@ -618,6 +821,7 @@ function InvoiceList({ invoices, onEdit, onDelete, seller }) {
               <td className="text-right">
                 <button onClick={() => { sendEdit(inv); onEdit(inv); }} className="btn btn-sm btn-secondary mr-1">Edit</button>
                 <button onClick={() => printInvoice(inv, seller)} className="btn btn-sm btn-primary mr-1">Print</button>
+<button onClick={() => exportInvoicePDF(inv, seller)} className="btn btn-sm btn-primary mr-1">PDF</button>
                 <button onClick={() => exportInvoiceCSV(inv, seller)} className="btn btn-sm btn-secondary mr-1">CSV</button>
                 <button onClick={() => onDelete(inv.id)} className="btn btn-sm btn-danger">Delete</button>
               </td>
@@ -631,25 +835,293 @@ function InvoiceList({ invoices, onEdit, onDelete, seller }) {
 }
 
 /* ---------- Print / Export helpers ---------- */
-function printInvoice(inv, seller) {
+function printInvoice(inv, seller, showPanNo = false) {
+// Use showPanNo from invoice if saved, otherwise use passed parameter
+  const shouldShowPanNo = inv.showPanNo !== undefined ? inv.showPanNo : showPanNo;
+  // Use seller from invoice if available, otherwise use passed seller
+  const effectiveSeller = inv.seller || seller;
+  
   const w = window.open('', '_blank');
-  const html = renderInvoiceHtml(inv, seller);
+  const html = renderInvoiceHtml(inv, effectiveSeller, shouldShowPanNo);
   w.document.write(html);
+w.document.title = `Invoice ${inv.invoiceNumber || ''}`;
   w.document.close();
+// Wait a bit for document to load before printing
+  setTimeout(() => {
   w.focus();
   w.print();
+}, 100);
 }
 
-function printCurrentInvoice(inv, seller) {
+async function exportInvoicePDF(inv, seller, showPanNo = false) {
+  // Use showPanNo from invoice if saved, otherwise use passed parameter
+  const shouldShowPanNo = inv.showPanNo !== undefined ? inv.showPanNo : showPanNo;
+  // Use seller from invoice if available, otherwise use passed seller
+  const effectiveSeller = inv.seller || seller;
+  
+  const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const margin = 40;
+  const tableStartX = margin;
+  const tableWidth = pageWidth - (2 * margin);
+
+  // Set up fonts and colors
+  doc.setFont('helvetica');
+
+  let y = 50;
+  
+  // Load stamp image for PDF
+  const loadStampImage = () => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const dataURL = canvas.toDataURL('image/png');
+        resolve(dataURL);
+      };
+      img.onerror = reject;
+      img.src = stampSignImage;
+    });
+  };
+
+  // Helper function to draw table borders
+  function drawTableBorders(startX, startY, rowHeight, numRows, colWidths) {
+    const totalWidth = colWidths.reduce((sum, w) => sum + w, 0);
+    let currentX = startX;
+    
+    // Draw outer border
+    doc.setDrawColor(0, 0, 0);
+    doc.setLineWidth(1);
+    doc.rect(startX, startY, totalWidth, rowHeight * numRows);
+    
+    // Draw vertical lines
+    for (let i = 0; i < colWidths.length - 1; i++) {
+      currentX += colWidths[i];
+      doc.line(currentX, startY, currentX, startY + (rowHeight * numRows));
+    }
+    
+    // Draw horizontal lines
+    for (let i = 1; i < numRows; i++) {
+      doc.line(startX, startY + (rowHeight * i), startX + totalWidth, startY + (rowHeight * i));
+    }
+  }
+
+  // Left side - Name, Brand and Address
+  doc.setFontSize(22);
+  doc.setTextColor(45, 90, 39); // Dark green
+  doc.setFont('helvetica', 'bold');
+  doc.text(effectiveSeller.owner, margin, y);
+
+  y += 25;
+  doc.setFontSize(16);
+  doc.setTextColor(0, 0, 0);
+  doc.setFont('helvetica', 'bold');
+  doc.text(effectiveSeller.businessName, margin, y);
+
+  y += 20;
+  doc.setFontSize(10);
+  doc.setTextColor(51, 51, 51);
+  doc.setFont('helvetica', 'normal');
+  const addressLines = doc.splitTextToSize(effectiveSeller.address, 250);
+  doc.text(addressLines, margin, y);
+  y += addressLines.length * 12;
+
+  // Right side - Invoice and Date
+  const rightX = pageWidth - margin - 150;
+  y = 50;
+  doc.setFontSize(12);
+  doc.setTextColor(0, 0, 0);
+  doc.setFont('helvetica', 'bold');
+  doc.text('Invoice', rightX, y, { align: 'right' });
+
+  y += 20;
+  doc.setFontSize(11);
+  doc.setFont('helvetica', 'bold');
+  doc.text(inv.invoiceNumber || '', rightX, y, { align: 'right' });
+
+  y += 20;
+  doc.setFontSize(10);
+  doc.setFont('helvetica', 'normal');
+  const formattedDate = formatDate(inv.date);
+  doc.text(formattedDate, rightX, y, { align: 'right' });
+
+  // Customer Name and Address below seller info
+  y = Math.max(y, 140);
+  doc.setFontSize(10);
+  doc.setTextColor(0, 0, 0);
+  doc.setFont('helvetica', 'bold');
+  doc.text('Customer Name:', margin, y);
+
+  y += 15;
+  doc.setFont('helvetica', 'normal');
+  doc.text(inv.customer?.name || '', margin, y);
+
+  if (inv.customer?.address) {
+    y += 15;
+    doc.text(inv.customer.address, margin, y);
+  }
+
+  y += 30;
+
+  // Table setup - adjust column widths to fit page width
+  const totalColWidth = pageWidth - (2 * margin); // Total available width
+  const colWidths = [60, 200, 60, 80, 80]; // Sr. No, Description, Qty, Amount, Total
+  const sumColWidths = colWidths.reduce((sum, w) => sum + w, 0);
+  // Scale columns if needed to fit page width
+  const scaleFactor = sumColWidths > totalColWidth ? totalColWidth / sumColWidths : 1;
+  const adjustedColWidths = colWidths.map(w => w * scaleFactor);
+  const actualTableWidth = adjustedColWidths.reduce((sum, w) => sum + w, 0);
+  
+  const rowHeight = 20;
+  const headerRowHeight = 25;
+  const numDataRows = Math.max(inv.lines?.length || 0, 1);
+  const numEmptyRows = 12;
+  const totalRows = 1 + numDataRows + numEmptyRows; // Header + data + empty rows
+
+  // Table Header with background
+  doc.setFillColor(240, 240, 240);
+  doc.rect(tableStartX, y - headerRowHeight, actualTableWidth, headerRowHeight, 'F');
+  
+  // Draw header borders
+  drawTableBorders(tableStartX, y - headerRowHeight, headerRowHeight, 1, adjustedColWidths);
+
+  doc.setTextColor(0, 0, 0);
+  doc.setFontSize(9);
+  doc.setFont('helvetica', 'bold');
+  
+  let colX = tableStartX + 5;
+  doc.text('Sr. No', colX, y - 5, { align: 'center' });
+  colX += adjustedColWidths[0];
+  doc.text('Description', colX + 5, y - 5, { align: 'left' });
+  colX += adjustedColWidths[1];
+  doc.text('Qty', colX, y - 5, { align: 'center' });
+  colX += adjustedColWidths[2];
+  doc.text('Amount', colX, y - 5, { align: 'right' });
+  colX += adjustedColWidths[3];
+  doc.text('Total', colX, y - 5, { align: 'right' });
+
+  y += 5;
+
+  // Draw full table borders including data and empty rows
+  drawTableBorders(tableStartX, y - headerRowHeight, rowHeight, totalRows, adjustedColWidths);
+
+  // Table Content
+  doc.setTextColor(0, 0, 0);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+
+  (inv.lines || []).forEach((line, index) => {
+    colX = tableStartX + 5;
+    doc.text(String(index + 1), colX, y, { align: 'center' });
+    colX += adjustedColWidths[0];
+    const descLines = doc.splitTextToSize(line.description || '', adjustedColWidths[1] - 10);
+    doc.text(descLines, colX + 5, y, { align: 'left' });
+    colX += adjustedColWidths[1];
+    doc.text(String(line.qty), colX, y, { align: 'center' });
+    colX += adjustedColWidths[2];
+    doc.text(`₹${line.price}`, colX, y, { align: 'right' });
+    colX += adjustedColWidths[3];
+    doc.text(`₹${line.total}`, colX, y, { align: 'right' });
+    y += rowHeight;
+  });
+
+  // Add empty rows
+  for (let i = 0; i < numEmptyRows; i++) {
+    y += rowHeight;
+  }
+
+  y += 20;
+
+  // Totals Section - Amount in Words on left, Totals on right
+  const totalQty = (inv.lines || []).reduce((sum, l) => sum + (Number(l.qty) || 0), 0);
+  const totalAmount = Number(inv.total) || 0;
+  
+  // Amount in Words on left
+  const amountInWords = numberToWords(totalAmount);
+  doc.setFontSize(9);
+  doc.setFont('helvetica', 'italic');
+  doc.setTextColor(85, 85, 85);
+  const amountWordsY = y;
+  doc.text(`Amount in Words: ${amountInWords}`, margin, y);
+
+  // PAN No on left, below Amount in Words (if enabled)
+  // Use effectiveSeller.panNo or fallback to DEFAULT_SELLER.panNo
+  const effectivePanNo = (effectiveSeller && effectiveSeller.panNo) || DEFAULT_SELLER.panNo;
+  if (shouldShowPanNo && effectivePanNo) {
+    y += 15;
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(0, 0, 0);
+    doc.text(`Pan No: ${effectivePanNo}`, margin, y);
+  }
+
+  // Totals on right (aligned with Amount in Words line)
+  const totalsX = pageWidth - margin;
+  doc.setFontSize(10);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(0, 0, 0);
+  doc.text(`Total Qty: ${totalQty}`, totalsX - 150, amountWordsY, { align: 'right' });
+  doc.text(`Total Amount: ₹${totalAmount}`, totalsX, amountWordsY, { align: 'right' });
+
+  // Move y to the bottom of this section (accounting for PAN No if shown)
+  y = Math.max(y, amountWordsY) + 25;
+
+  // Bank Details Section
+  doc.setFillColor(249, 249, 249);
+  doc.rect(margin, y - 10, actualTableWidth, 70, 'F');
+  doc.setDrawColor(221, 221, 221);
+  doc.setLineWidth(1);
+  doc.rect(margin, y - 10, actualTableWidth, 70);
+
+  doc.setFontSize(12);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(0, 0, 0);
+  doc.text('Bank Details:', margin + 10, y);
+
+  doc.setFontSize(10);
+  doc.setFont('helvetica', 'normal');
+  doc.text(effectiveSeller.bank.accountName, margin + 10, y + 15);
+  doc.text(effectiveSeller.bank.name, margin + 10, y + 30);
+  doc.text(`Account No: ${effectiveSeller.bank.accountNo}`, margin + 10, y + 45);
+  doc.text(`IFSC Code: ${effectiveSeller.bank.ifsc}`, margin + 10, y + 60);
+
+  // Add stamp image at bottom right
+  try {
+    const stampDataURL = await loadStampImage();
+    const stampWidth = 100;
+    const stampHeight = 100;
+    const stampX = pageWidth - stampWidth - 40;
+    const stampY = pageHeight - stampHeight - 40;
+    
+    doc.addImage(stampDataURL, 'PNG', stampX, stampY, stampWidth, stampHeight);
+  } catch (error) {
+    console.error('Error adding stamp image to PDF:', error);
+  }
+
+  // Save the PDF
+  doc.save(`${inv.invoiceNumber || 'invoice'}.pdf`);
+}
+
+function printCurrentInvoice(inv, seller, showPanNo = false) {
   const w = window.open('', '_blank');
-  const html = renderInvoiceHtml(inv, seller);
+  const html = renderInvoiceHtml(inv, seller, showPanNo);
   w.document.write(html);
+w.document.title = `Invoice ${inv.invoiceNumber || ''}`;
   w.document.close();
+// Wait a bit for document to load before printing
+  setTimeout(() => {
   w.focus();
   w.print();
+}, 100);
 }
 
-function renderInvoiceHtml(inv, seller) {
+function renderInvoiceHtml(inv, seller, showPanNo = false) {
   const rows = inv.lines.map((l, index) =>
     `<tr>
       <td style="text-align:center">${index + 1}</td>
@@ -673,6 +1145,11 @@ function renderInvoiceHtml(inv, seller) {
 
   const totalQty = inv.lines.reduce((sum, l) => sum + (Number(l.qty) || 0), 0);
   const totalAmount = inv.lines.reduce((sum, l) => sum + (Number(l.total) || 0), 0);
+  const amountInWords = numberToWords(totalAmount);
+  const formattedDate = formatDate(inv.date);
+// Get PAN number from seller or fallback to DEFAULT_SELLER
+  const panNo = (seller && seller.panNo) || DEFAULT_SELLER.panNo;
+  const panNoDisplay = showPanNo && panNo ? `Pan No: ${escapeHtml(panNo)}` : '';
 
   return `
   <!DOCTYPE html>
@@ -694,9 +1171,21 @@ function renderInvoiceHtml(inv, seller) {
         background: white;
       }
       .invoice-header {
-        text-align: center;
         margin-bottom: 30px;
         padding-bottom: 15px;
+      }
+      .invoice-header-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        margin-bottom: 20px;
+      }
+      .invoice-left {
+        flex: 1;
+      }
+      .invoice-right {
+        flex: 1;
+        text-align: right;
       }
       .invoice-title {
         font-size: 2.2rem;
@@ -721,20 +1210,30 @@ function renderInvoiceHtml(inv, seller) {
         color: #333;
         margin: 0;
       }
-      .invoice-details {
-        display: flex;
-        justify-content: space-between;
-        margin-bottom: 25px;
-        padding: 0;
+      .invoice-label {
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: #000;
+        margin: 0 0 5px 0;
       }
-      .invoice-customer {
-        flex: 1;
+      .invoice-number {
+        font-size: 1rem;
+        font-weight: 700;
+        color: #000;
+        margin: 0 0 10px 0;
+      }
+      .invoice-date-value {
+        font-size: 0.95rem;
+        color: #333;
+        margin: 0;
+      }
+      .invoice-customer-section {
+        margin-top: 20px;
         font-size: 0.95rem;
       }
-      .invoice-date {
-        flex: 1;
-        text-align: right;
-        font-size: 0.95rem;
+      .invoice-customer-label {
+        font-weight: 600;
+        margin-bottom: 5px;
       }
       .invoice-table {
         width: 100%;
@@ -787,6 +1286,12 @@ function renderInvoiceHtml(inv, seller) {
         font-weight: 700;
         font-size: 1.1rem;
       }
+      .invoice-amount-words {
+        margin-top: 10px;
+        font-size: 0.95rem;
+        font-style: italic;
+        color: #555;
+      }
       .invoice-bank-details {
         margin-top: 30px;
         padding: 15px;
@@ -814,27 +1319,68 @@ function renderInvoiceHtml(inv, seller) {
         font-size: 0.95rem;
         font-weight: 600;
       }
+      .invoice-stamp {
+        position: absolute;
+        bottom: 40px;
+        right: 40px;
+        width: 120px;
+        height: 120px;
+        z-index: 10;
+      }
+      .invoice-container {
+        position: relative;
+      }
       @media print {
-        body { margin: 0; padding: 0; }
-        .invoice-container { max-width: none; }
+        body { 
+margin: 0; 
+padding: 20px;
+          background: white;
+}
+        .invoice-container { 
+max-width: 100%;
+          margin: 0;
+        }
+        @page {
+          margin: 0.5cm;
+          size: A4;
+        }
+        /* Ensure proper page breaks */
+        .invoice-container {
+          page-break-inside: avoid;
+        }
+        .invoice-table {
+          page-break-inside: avoid;
+}
       }
     </style>
   </head>
   <body>
+<script>
+      // Set document title to prevent showing URL
+      document.title = 'Invoice ${escapeHtml(inv.invoiceNumber || '')}';
+      // Prevent browser from showing URL and date in print
+      window.onbeforeprint = function() {
+        document.title = 'Invoice ${escapeHtml(inv.invoiceNumber || '')}';
+      };
+    </script>
     <div class="invoice-container">
       <div class="invoice-header">
-        <div class="invoice-title">${escapeHtml(seller.owner)}</div>
-        <div class="invoice-business-name">${escapeHtml(seller.businessName)}</div>
-        <div class="invoice-address">${escapeHtml(seller.address)}</div>
-        <div class="invoice-contact">${escapeHtml(seller.contact)}</div>
-      </div>
-      
-      <div class="invoice-details">
-        <div class="invoice-customer">
-          <strong>Name:</strong> ${escapeHtml(inv.customer?.name || '')}
+        <div class="invoice-header-top">
+          <div class="invoice-left">
+            <div class="invoice-title">${escapeHtml(seller.owner)}</div>
+            <div class="invoice-business-name">${escapeHtml(seller.businessName)}</div>
+            <div class="invoice-address">${escapeHtml(seller.address)}</div>
+          </div>
+          <div class="invoice-right">
+            <div class="invoice-label">Invoice</div>
+            <div class="invoice-number">${escapeHtml(inv.invoiceNumber || '')}</div>
+            <div class="invoice-date-value">${escapeHtml(formattedDate)}</div>
+          </div>
         </div>
-        <div class="invoice-date">
-          <strong>Date:</strong> ${escapeHtml(inv.date || '')}
+        <div class="invoice-customer-section">
+          <div class="invoice-customer-label">Customer Name:</div>
+          <div>${escapeHtml(inv.customer?.name || '')}</div>
+          ${inv.customer?.address ? `<div style="margin-top: 5px;">${escapeHtml(inv.customer.address)}</div>` : ''}
         </div>
       </div>
       
@@ -855,11 +1401,14 @@ function renderInvoiceHtml(inv, seller) {
       </table>
       
       <div class="pan-section">
-        <div class="pan-label">Pan No</div>
+        <div class="pan-label">${panNoDisplay}</div>
         <div class="invoice-totals">
           <div class="invoice-total-qty">Total Qty: ${totalQty}</div>
           <div class="invoice-total-amount">Total Amount: ₹${totalAmount}</div>
         </div>
+      </div>
+      <div class="invoice-amount-words">
+        Amount in Words: ${escapeHtml(amountInWords)}
       </div>
       
       <div class="invoice-bank-details">
@@ -871,6 +1420,7 @@ function renderInvoiceHtml(inv, seller) {
           IFSC Code: ${escapeHtml(seller.bank.ifsc)}
         </div>
       </div>
+      <img src="${stampSignImage}" alt="Stamp" class="invoice-stamp" />
     </div>
   </body>
   </html>`;
@@ -881,11 +1431,18 @@ function escapeHtml(s) { return String(s || '').replace(/&/g, '&amp;').replace(/
 function exportInvoiceCSV(inv, seller) {
   const csvRows = [];
 
+  // Use seller from invoice if available, otherwise use passed seller
+  const effectiveSeller = inv.seller || seller;
+  
+  // Check if PAN No should be shown (from saved invoice or default to showing if PAN exists)
+  const shouldShowPanNo = inv.showPanNo !== undefined ? inv.showPanNo : true; // Default to true for CSV
+  const panNo = (effectiveSeller && effectiveSeller.panNo) || DEFAULT_SELLER.panNo;
+
   // Invoice Header - matching the reference image format
-  csvRows.push([seller.owner]);
-  csvRows.push([seller.businessName]);
-  csvRows.push([seller.address]);
-  csvRows.push([seller.contact]);
+  csvRows.push([effectiveSeller.owner]);
+  csvRows.push([effectiveSeller.businessName]);
+  csvRows.push([effectiveSeller.address]);
+  csvRows.push([effectiveSeller.contact]);
   csvRows.push(['']);
 
   // Invoice Details - matching the reference layout
@@ -917,17 +1474,18 @@ function exportInvoiceCSV(inv, seller) {
   const totalQty = inv.lines.reduce((sum, l) => sum + (Number(l.qty) || 0), 0);
   const totalAmount = inv.lines.reduce((sum, l) => sum + (Number(l.total) || 0), 0);
 
-  // Pan No section with totals
-  csvRows.push(['Pan No', '', '', 'Total Qty:', totalQty]);
+  // Pan No section with totals - include PAN number if available
+  const panNoValue = (shouldShowPanNo && panNo) ? panNo : '';
+  csvRows.push(['Pan No', panNoValue, '', 'Total Qty:', totalQty]);
   csvRows.push(['', '', '', 'Total Amount:', totalAmount]);
   csvRows.push(['']);
 
   // Bank Details
   csvRows.push(['Bank Details:']);
-  csvRows.push([seller.bank.accountName]);
-  csvRows.push([seller.bank.name]);
-  csvRows.push([`Account No: ${seller.bank.accountNo}`]);
-  csvRows.push([`IFSC Code: ${seller.bank.ifsc}`]);
+  csvRows.push([effectiveSeller.bank.accountName]);
+  csvRows.push([effectiveSeller.bank.name]);
+  csvRows.push([`Account No: ${effectiveSeller.bank.accountNo}`]);
+  csvRows.push([`IFSC Code: ${effectiveSeller.bank.ifsc}`]);
 
   // Convert to CSV format
   const csvContent = csvRows.map(row =>
@@ -1192,9 +1750,10 @@ function ImportExport({ invoices, setInvoices }) {
     y += 40;
 
     // Table Header with optimized column widths and proper margins
-    const colWidths = [75, 65, 85, 100, 35, 65, 65, 65]; // Define column widths
-    const colPositions = [30, 105, 170, 255, 355, 390, 455, 520]; // Define column positions (shifted left)
-    const tableWidth = 555; // Total table width
+// Adjusted widths: Invoice # (100), Date (80), Customer (85), Description (100), Qty (35), Unit Price (65), Line Total (65), Invoice Total (65)
+    const colWidths = [100, 80, 85, 100, 35, 65, 65, 65]; // Define column widths
+    const colPositions = [30, 130, 210, 295, 395, 430, 495, 560]; // Define column positions
+    const tableWidth = 595; // Total table width (adjusted)
     const rowHeight = 18; // Define consistent row height
 
     // Draw header background
@@ -1247,9 +1806,26 @@ function ImportExport({ invoices, setInvoices }) {
           y = 50;
         }
 
-        // Prepare data for each column with proper truncation for optimized widths
-        const invoiceNum = (inv.invoiceNumber || '').substring(0, 10);
-        const date = (inv.date || '').substring(0, 8);
+        // Format date properly
+        let formattedDate = '';
+        if (inv.date) {
+          try {
+            const dateObj = new Date(inv.date);
+            if (!isNaN(dateObj.getTime())) {
+              const year = dateObj.getFullYear();
+              const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+              const day = String(dateObj.getDate()).padStart(2, '0');
+              formattedDate = `${year}-${month}-${day}`;
+            } else {
+              formattedDate = inv.date.substring(0, 10) || '';
+            }
+          } catch (e) {
+            formattedDate = inv.date.substring(0, 10) || '';
+          }
+        }
+
+        // Prepare data for each column with proper formatting
+        const invoiceNum = inv.invoiceNumber || '';
         const customer = (inv.customer?.name || '').substring(0, 12);
         const description = (line.description || '').substring(0, 18);
         const qty = String(line.qty || 0);
@@ -1276,8 +1852,11 @@ function ImportExport({ invoices, setInvoices }) {
         });
 
         // Display data in each column with proper alignment
-        doc.text(invoiceNum, colPositions[0] + 3, y + 2);
-        doc.text(date, colPositions[1] + 3, y + 2);
+// Use splitTextToSize for longer text to prevent overflow
+        const invoiceNumLines = doc.splitTextToSize(invoiceNum, colWidths[0] - 6);
+        const dateLines = doc.splitTextToSize(formattedDate, colWidths[1] - 6);
+        doc.text(invoiceNumLines, colPositions[0] + 3, y + 2);
+        doc.text(dateLines, colPositions[1] + 3, y + 2);
         doc.text(customer, colPositions[2] + 3, y + 2);
         doc.text(description, colPositions[3] + 3, y + 2);
         doc.text(qty, colPositions[4] + 3, y + 2);
@@ -1588,56 +2167,159 @@ function Dashboard({ invoices }) {
 }
 
 /* ---------- PDF button (requires jsPDF) ---------- */
-function PdfButton({ seller, customer, date, lines, subtotal, total }) {
+function PdfButton({ seller, customer, date, lines, subtotal, total, showPanNo = false, invoiceNumber = '' }) {
   async function makePdf() {
     const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const margin = 40;
+    const tableStartX = margin;
+    const tableWidth = pageWidth - (2 * margin);
 
     // Set up fonts and colors
     doc.setFont('helvetica');
 
-    // Header Section - matching reference image
+    let y = 50;
+    
+    // Load stamp image for PDF
+    const loadStampImage = () => {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width;
+          canvas.height = img.height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+          const dataURL = canvas.toDataURL('image/png');
+          resolve(dataURL);
+        };
+        img.onerror = reject;
+        img.src = stampSignImage;
+      });
+    };
+
+    // Helper function to draw table borders
+    function drawTableBorders(startX, startY, rowHeight, numRows, colWidths) {
+      const totalWidth = colWidths.reduce((sum, w) => sum + w, 0);
+      let currentX = startX;
+      
+      // Draw outer border
+      doc.setDrawColor(0, 0, 0);
+      doc.setLineWidth(1);
+      doc.rect(startX, startY, totalWidth, rowHeight * numRows);
+      
+      // Draw vertical lines
+      for (let i = 0; i < colWidths.length - 1; i++) {
+        currentX += colWidths[i];
+        doc.line(currentX, startY, currentX, startY + (rowHeight * numRows));
+      }
+      
+      // Draw horizontal lines
+      for (let i = 1; i < numRows; i++) {
+        doc.line(startX, startY + (rowHeight * i), startX + totalWidth, startY + (rowHeight * i));
+      }
+    }
+
+    // Left side - Name, Brand and Address
     doc.setFontSize(22);
-    doc.setTextColor(45, 90, 39); // Dark green like reference
+    doc.setTextColor(45, 90, 39); // Dark green
     doc.setFont('helvetica', 'bold');
-    doc.text(seller.owner, 40, 50);
-
-    doc.setFontSize(16);
-    doc.setTextColor(0, 0, 0); // Black
-    doc.setFont('helvetica', 'bold');
-    doc.text(seller.businessName, 40, 75);
-
-    doc.setFontSize(10);
-    doc.setTextColor(51, 51, 51); // Dark gray
-    doc.setFont('helvetica', 'normal');
-    doc.text(seller.address, 40, 95);
-    doc.text(seller.contact, 40, 110);
-
-    // Invoice Details Section
-    let y = 130;
-    doc.setFontSize(10);
-    doc.setTextColor(0, 0, 0);
-
-    // Customer and Date info - matching reference layout
-    doc.text(`Name: ${customer.name || ''}`, 40, y);
-    doc.text(`Date: ${date}`, 400, y);
+    doc.text(seller.owner, margin, y);
 
     y += 25;
+    doc.setFontSize(16);
+    doc.setTextColor(0, 0, 0);
+    doc.setFont('helvetica', 'bold');
+    doc.text(seller.businessName, margin, y);
 
-    // Table Header - matching reference style
-    doc.setFillColor(240, 240, 240); // Light gray background
-    doc.rect(40, y - 10, 510, 20, 'F');
+    y += 20;
+    doc.setFontSize(10);
+    doc.setTextColor(51, 51, 51);
+    doc.setFont('helvetica', 'normal');
+const addressLines = doc.splitTextToSize(seller.address, 250);
+    doc.text(addressLines, margin, y);
+y += addressLines.length * 12;
+
+    // Right side - Invoice and Date
+const rightX = pageWidth - margin - 150;
+    y = 50;
+    doc.setFontSize(12);
+    doc.setTextColor(0, 0, 0);
+    doc.setFont('helvetica', 'bold');
+    doc.text('Invoice', rightX, y, { align: 'right' });
+
+    y += 20;
+    doc.setFontSize(11);
+    doc.setFont('helvetica', 'bold');
+    doc.text(invoiceNumber || '', rightX, y, { align: 'right' });
+
+    y += 20;
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'normal');
+    const formattedDate = formatDate(date);
+    doc.text(formattedDate, rightX, y, { align: 'right' });
+
+    // Customer Name and Address below seller info
+    y = Math.max(y, 140);
+    doc.setFontSize(10);
+    doc.setTextColor(0, 0, 0);
+    doc.setFont('helvetica', 'bold');
+    doc.text('Customer Name:', margin, y);
+
+    y += 15;
+    doc.setFont('helvetica', 'normal');
+    doc.text(customer.name || '', margin, y);
+
+    if (customer.address) {
+      y += 15;
+      doc.text(customer.address, margin, y);
+    }
+
+    y += 30;
+
+    // Table setup - adjust column widths to fit page width
+    const totalColWidth = pageWidth - (2 * margin); // Total available width
+    const colWidths = [60, 200, 60, 80, 80]; // Sr. No, Description, Qty, Amount, Total
+    const sumColWidths = colWidths.reduce((sum, w) => sum + w, 0);
+    // Scale columns if needed to fit page width
+    const scaleFactor = sumColWidths > totalColWidth ? totalColWidth / sumColWidths : 1;
+    const adjustedColWidths = colWidths.map(w => w * scaleFactor);
+    const actualTableWidth = adjustedColWidths.reduce((sum, w) => sum + w, 0);
+    
+    const rowHeight = 20;
+    const headerRowHeight = 25;
+    const numDataRows = Math.max(lines.length, 1);
+    const numEmptyRows = 12;
+    const totalRows = 1 + numDataRows + numEmptyRows; // Header + data + empty rows
+
+    // Table Header with background
+    doc.setFillColor(240, 240, 240);
+    doc.rect(tableStartX, y - headerRowHeight, actualTableWidth, headerRowHeight, 'F');
+
+    // Draw header borders
+    drawTableBorders(tableStartX, y - headerRowHeight, headerRowHeight, 1, adjustedColWidths);
 
     doc.setTextColor(0, 0, 0);
     doc.setFontSize(9);
     doc.setFont('helvetica', 'bold');
 
-    doc.text('Sr. No', 50, y);
-    doc.text('Description', 100, y);
-    doc.text('Qty', 350, y);
-    doc.text('Amount', 400, y);
-    doc.text('Total', 500, y);
+let colX = tableStartX + 5;
+    doc.text('Sr. No', colX, y - 5, { align: 'center' });
+colX += adjustedColWidths[0];
+    doc.text('Description', colX + 5, y - 5, { align: 'left' });
+colX += adjustedColWidths[1];
+    doc.text('Qty', colX, y - 5, { align: 'center' });
+colX += adjustedColWidths[2];
+    doc.text('Amount', colX, y - 5, { align: 'right' });
+colX += adjustedColWidths[3];
+    doc.text('Total', colX, y - 5, { align: 'right' });
 
-    y += 25;
+    y += 5;
+
+    // Draw full table borders including data and empty rows
+    drawTableBorders(tableStartX, y - headerRowHeight, rowHeight, totalRows, adjustedColWidths);
 
     // Table Content
     doc.setTextColor(0, 0, 0);
@@ -1645,52 +2327,91 @@ function PdfButton({ seller, customer, date, lines, subtotal, total }) {
     doc.setFontSize(9);
 
     lines.forEach((line, index) => {
-      doc.text(String(index + 1), 50, y);
-      doc.text(line.description || '', 100, y);
-      doc.text(String(line.qty), 350, y);
-      doc.text(`₹${line.price}`, 400, y);
-      doc.text(`₹${line.total}`, 500, y);
-      y += 15;
+colX = tableStartX + 5;
+      doc.text(String(index + 1), colX, y, { align: 'center' });
+      colX += adjustedColWidths[0];
+      const descLines = doc.splitTextToSize(line.description || '', adjustedColWidths[1] - 10);
+      doc.text(descLines, colX + 5, y, { align: 'left' });
+colX += adjustedColWidths[1];
+      doc.text(String(line.qty), colX, y, { align: 'center' });
+colX += adjustedColWidths[2];
+      doc.text(`₹${line.price}`, colX, y, { align: 'right' });
+colX += adjustedColWidths[3];
+      doc.text(`₹${line.total}`, colX, y, { align: 'right' });
+      y += rowHeight;
     });
 
-    // Add empty rows for additional items (matching reference)
-    for (let i = 0; i < 12; i++) {
-      doc.text('', 50, y);
-      doc.text('', 100, y);
-      doc.text('', 350, y);
-      doc.text('', 400, y);
-      doc.text('', 500, y);
-      y += 15;
+    // Add empty rows
+    for (let i = 0; i < numEmptyRows; i++) {
+      y += rowHeight;
     }
 
     y += 20;
 
-    // Totals Section - matching reference format
+    // Totals Section - Amount in Words on left, Totals on right
     const totalQty = lines.reduce((sum, l) => sum + (Number(l.qty) || 0), 0);
 
+// Amount in Words on left
+    const amountInWords = numberToWords(total);
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'italic');
+    doc.setTextColor(85, 85, 85);
+    const amountWordsY = y;
+    doc.text(`Amount in Words: ${amountInWords}`, margin, y);
+
+    // PAN No on left, below Amount in Words (if enabled)
+    // Use seller.panNo or fallback to DEFAULT_SELLER.panNo
+    const panNo = (seller && seller.panNo) || DEFAULT_SELLER.panNo;
+    if (showPanNo && panNo) {
+      y += 15;
     doc.setFontSize(10);
     doc.setFont('helvetica', 'bold');
-    doc.text('Pan No', 40, y);
-    doc.text(`Total Qty: ${totalQty}`, 350, y);
-    doc.text(`Total Amount: ₹${total}`, 400, y);
+    doc.setTextColor(0, 0, 0);
+      doc.text(`Pan No: ${panNo}`, margin, y);
+    }
 
-    y += 40;
+    // Totals on right (aligned with Amount in Words line)
+    const totalsX = pageWidth - margin;
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(0, 0, 0);
+    doc.text(`Total Qty: ${totalQty}`, totalsX - 150, amountWordsY, { align: 'right' });
+    doc.text(`Total Amount: ₹${total}`, totalsX, amountWordsY, { align: 'right' });
 
-    // Bank Details Section - matching reference style
+    // Move y to the bottom of this section (accounting for PAN No if shown)
+    y = Math.max(y, amountWordsY) + 25;
+
+    // Bank Details Section
     doc.setFillColor(249, 249, 249);
-    doc.rect(40, y - 10, 510, 70, 'F');
+    doc.rect(margin, y - 10, actualTableWidth, 70, 'F');
+doc.setDrawColor(221, 221, 221);
+    doc.setLineWidth(1);
+    doc.rect(margin, y - 10, actualTableWidth, 70);
 
     doc.setFontSize(12);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(0, 0, 0);
-    doc.text('Bank Details:', 50, y);
+    doc.text('Bank Details:', margin + 10, y);
 
     doc.setFontSize(10);
     doc.setFont('helvetica', 'normal');
-    doc.text(seller.bank.accountName, 50, y + 15);
-    doc.text(seller.bank.name, 50, y + 30);
-    doc.text(`Account No: ${seller.bank.accountNo}`, 50, y + 45);
-    doc.text(`IFSC Code: ${seller.bank.ifsc}`, 50, y + 60);
+    doc.text(seller.bank.accountName, margin + 10, y + 15);
+    doc.text(seller.bank.name, margin + 10, y + 30);
+    doc.text(`Account No: ${seller.bank.accountNo}`, margin + 10, y + 45);
+    doc.text(`IFSC Code: ${seller.bank.ifsc}`, margin + 10, y + 60);
+
+    // Add stamp image at bottom right
+    try {
+      const stampDataURL = await loadStampImage();
+            const stampWidth = 100;
+      const stampHeight = 100;
+      const stampX = pageWidth - stampWidth - 40;
+      const stampY = pageHeight - stampHeight - 40;
+      
+      doc.addImage(stampDataURL, 'PNG', stampX, stampY, stampWidth, stampHeight);
+    } catch (error) {
+      console.error('Error adding stamp image to PDF:', error);
+    }
 
     // Save the PDF
     doc.save('invoice.pdf');
